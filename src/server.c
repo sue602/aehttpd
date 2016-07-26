@@ -124,15 +124,17 @@ void free_client(struct client *c) {
     FREE(c->req.parser);
     FREE(c->req.path);
     FREE(c->req.query);
-    
-    
-    aeDeleteFileEvent(c->loop, c->fd, AE_READABLE);
-    aeDeleteFileEvent(c->loop, c->fd, AE_WRITABLE);
-    close(c->fd);
 
-    if (c->resp.header)
-        free(c->resp.header);
-    strbuf_free(c->resp.buffer);
+    FREE(c->resp.header);
+    
+    
+    if (c->loop && (c->fd > 0)) {
+        aeDeleteFileEvent(c->loop, c->fd, AE_READABLE);
+        aeDeleteFileEvent(c->loop, c->fd, AE_WRITABLE);
+        close(c->fd);
+    }
+
+    strbuf_free(c->resp.sbuf);
     if (c->buf.value) {
         free(c->buf.value);
         c->buf.value = NULL;
@@ -165,8 +167,13 @@ struct client *create_client(int fd) {
     }
 
     
-    strbuf *sbuf = strbuf_new_with_size(1024);
-    c->resp.buffer = sbuf;
+    strbuf *sbuf = strbuf_new_with_size(8196*4);
+    if (!sbuf) {
+        free_client(c);
+        return NULL;
+    }
+        
+    c->resp.sbuf = sbuf;
     return c;
 }
 
@@ -363,7 +370,7 @@ size_t prepare_resp_header(struct client *c, char *headers, size_t buf_size)
     APPEND_CONSTANT("HTTP/1.1 ");
     APPEND_STRING(http_status_as_string_with_code(200));
     APPEND_CONSTANT("\r\nContent-Length: ");
-    APPEND_UINT(strbuf_get_length(resp->buffer));
+    APPEND_UINT(strbuf_get_length(resp->sbuf));
     APPEND_CONSTANT("\r\nContent-Type: ");
     APPEND_STRING(resp->mime_type);
     APPEND_CONSTANT("\r\nConnection: close");
@@ -453,8 +460,8 @@ void write_proc(aeEventLoop *loop, int fd, void *data, int mask) {
     
     resp->iovec_buf[0].iov_base = resp->header;
     resp->iovec_buf[0].iov_len = header_len;
-    resp->iovec_buf[1].iov_base = strbuf_get_buffer(resp->buffer);
-    resp->iovec_buf[1].iov_len = strbuf_get_length(resp->buffer);
+    resp->iovec_buf[1].iov_base = strbuf_get_buffer(resp->sbuf);
+    resp->iovec_buf[1].iov_len = strbuf_get_length(resp->sbuf);
     resp->curr_iov = 0;
     resp->total_written = 0;
 
@@ -472,13 +479,11 @@ int url_callback(http_parser* parser, const char *at, size_t length) {
         if (url.field_set & (1 << UF_PATH)) {
             c->req.path = strndup(at+url.field_data[UF_PATH].off,
                     url.field_data[UF_PATH].len);
-            DBG("path %s", c->req.path);
         }
         
         if (url.field_set & (1 << UF_QUERY)) {
             c->req.query = strndup(at+url.field_data[UF_QUERY].off,
                     url.field_data[UF_QUERY].len);
-            DBG("query %s", c->req.query);
         }
     }
     
@@ -495,6 +500,7 @@ void read_proc(aeEventLoop *loop, int fd, void *data, int mask) {
     if (nread == -1) {
         if (errno == EAGAIN) {
             WARN("Read from client failed: %s", strerror(errno));
+            aeCreateFileEvent(loop, fd, AE_READABLE, read_proc, c);
             return;
         } else {
             WARN("Read from client failed: %s", strerror(errno));
@@ -546,7 +552,6 @@ void read_proc(aeEventLoop *loop, int fd, void *data, int mask) {
 
     c->req.um->handler(c);
 
-   // aeDeleteFileEvent(c->loop, c->fd, AE_READABLE);
     aeCreateFileEvent(c->loop, c->fd, AE_WRITABLE, write_proc, c);  
 }
 
@@ -660,7 +665,6 @@ int build_blog(int id, struct blog *b)
         return HTTP_NOT_FOUND;
     }
 
-    DBG("json: \n%s", str->value);
     JsonNode *json = json_decode(str->value);
     if (!json) {
         DBG("decode json %s failed.", path);
@@ -766,9 +770,9 @@ enum http_status blogs(void *data) {
         return HTTP_INTERNAL_ERROR;
     
     resp->mime_type = "text/html";
-    strbuf_append_str(resp->buffer, str_head->value, str_head->len);
-    strbuf_append_str(resp->buffer, str->value, str->len);
-    strbuf_append_str(resp->buffer, str_foot->value, str_foot->len);
+    strbuf_append_str(resp->sbuf, str_head->value, str_head->len);
+    strbuf_append_str(resp->sbuf, str->value, str->len);
+    strbuf_append_str(resp->sbuf, str_foot->value, str_foot->len);
     return HTTP_OK;
 }
 
@@ -799,7 +803,7 @@ enum http_status static_files(void *data) {
         return HTTP_NOT_FOUND;
     
     resp->mime_type = file_mime_type(basename(filepath));
-    strbuf_set_static(resp->buffer, str->value, str->len);
+    strbuf_set_static(resp->sbuf, str->value, str->len);
 
     
     return HTTP_OK;

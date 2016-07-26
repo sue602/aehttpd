@@ -132,7 +132,7 @@ typedef struct key_value {
 struct http_request;
 
 struct http_response {
-    strbuf *buffer;
+    strbuf *sbuf;
     const char *mime_type;
     size_t content_length;
     struct key_value *headers;
