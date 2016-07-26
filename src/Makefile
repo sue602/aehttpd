@@ -6,16 +6,17 @@ SRC = $(EXT_SRC) $(AE_SRC) $(HTTP_SRC) $(SERVER_SRC)
 
 BIN = ../aehttpd
 
-ifneq ("$(DEBUG)", "")
-CFLAGS = -DDEBUG -g
-else
 CFLAGS = 
-endif
+DEBUG_CFLAGS = -DDEBUG -g
 
 LDFLAGS = -lpthread -lz
+DEBUG_LDFLAGS = -lpthread -lz
 
 all:
 	gcc ${SRC} -o ${BIN} ${CFLAGS} ${LDFLAGS} 
+
+debug:
+	gcc ${SRC} -o ${BIN} ${DEBUG_CFLAGS} ${DEBUG_LDFLAGS} 
 
 clean:
 	rm ./*.o $(BIN)

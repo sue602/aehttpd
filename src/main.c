@@ -89,7 +89,7 @@ static int cfg_def_init(struct cfg *cfg)
     cfg->ip = "0.0.0.0";
     cfg->port = 80;
     cfg->dir = "./www";
-    cfg->thrd_nr = 1;
+    cfg->thrd_nr = 4;
     return 0;
 }
 
