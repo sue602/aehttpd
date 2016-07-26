@@ -116,7 +116,7 @@ void http_set_url_map(struct server *svr, const struct url_map *map)
     }
 }
 
-#define FREE(x) do {if (x) {free(x);x=NULL;}} while(0)
+#define FREE(ptr_) do {if (ptr_) {free(ptr_);ptr_=NULL;}} while(0)
 void free_client(struct client *c) {
     if (!c)
         return;
@@ -138,10 +138,7 @@ void free_client(struct client *c) {
     strbuf_free(c->resp.head_sbuf);
     strbuf_free(c->resp.foot_sbuf);
 
-    if (c->buf.value) {
-        free(c->buf.value);
-        c->buf.value = NULL;
-    }
+    FREE(c->buf.value);
     free(c);
 }
 #undef FREE
@@ -152,6 +149,8 @@ struct client *create_client(int fd) {
         return NULL;
     
     struct client *c = malloc(sizeof(struct client));
+    if (!c)
+        return NULL;
     memset(c, 0, sizeof(struct client));
     
     c->fd = fd;
