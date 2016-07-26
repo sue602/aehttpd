@@ -121,24 +121,24 @@ void free_client(struct client *c) {
     if (!c)
         return;
     
-    FREE(c->req.parser);
-    FREE(c->req.path);
-    FREE(c->req.query);
-
-    FREE(c->resp.header);
-    
-    
     if (c->loop && (c->fd > 0)) {
         aeDeleteFileEvent(c->loop, c->fd, AE_READABLE);
         aeDeleteFileEvent(c->loop, c->fd, AE_WRITABLE);
         close(c->fd);
     }
 
+    FREE(c->req.parser);
+    FREE(c->req.path);
+    FREE(c->req.query);
+
+    FREE(c->resp.header);
+    FREE(c->resp.iovec_buf);
     strbuf_free(c->resp.sbuf);
     strbuf_free(c->resp.head_sbuf);
     strbuf_free(c->resp.foot_sbuf);
 
     FREE(c->buf.value);
+    
     free(c);
 }
 #undef FREE
@@ -431,17 +431,20 @@ void write_loop(aeEventLoop *loop, int fd, void *data, int mask) {
     struct http_request *req = &c->req;
     struct http_response *resp = &c->resp;   
 
-    int tries;
-    for (tries = 5; tries; ) {
+    for (;;) {
         ssize_t nwrite = writev(fd, resp->iovec_buf + resp->curr_iov, resp->iovec_sz - resp->curr_iov);
         if (nwrite < 0) {
             switch (errno) {
                 case EAGAIN:
+                case EINTR:
                     aeCreateFileEvent(c->loop, c->fd, AE_WRITABLE, write_loop, c);  
                     return;
                 default:
                     goto out;
             }
+        }
+        else if (nwrite == 0) {
+            goto out;
         }
 
         while (resp->curr_iov < resp->iovec_sz && nwrite >= (ssize_t)resp->iovec_buf[resp->curr_iov].iov_len) {
@@ -483,6 +486,13 @@ void write_proc(aeEventLoop *loop, int fd, void *data, int mask) {
         goto out;
     }
     
+    resp->iovec_sz = 2 + (resp->head_sbuf != NULL) + (resp->head_sbuf != NULL);
+    resp->iovec_buf = calloc(resp->iovec_sz, sizeof(struct iovec));
+    if (!resp->iovec_buf) {
+        page_500(fd);
+        goto out;
+    }
+
     int i = 0;
     resp->iovec_buf[i].iov_base = resp->header;
     resp->iovec_buf[i].iov_len = header_len;
@@ -500,7 +510,6 @@ void write_proc(aeEventLoop *loop, int fd, void *data, int mask) {
         resp->iovec_buf[i].iov_len = strbuf_get_length(resp->foot_sbuf);
         i++;
     } 
-    resp->iovec_sz = i;
     resp->curr_iov = 0;
     resp->total_written = 0;
 

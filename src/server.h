@@ -142,7 +142,7 @@ struct http_response {
     char *header;
     int iovec_sz;
     int curr_iov;
-    struct iovec iovec_buf[4];
+    struct iovec *iovec_buf;
     ssize_t total_written;
     
     struct client *parent_client;
