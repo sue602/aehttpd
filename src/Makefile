@@ -19,4 +19,4 @@ debug:
 	gcc ${SRC} -o ${BIN} ${DEBUG_CFLAGS} ${DEBUG_LDFLAGS} 
 
 clean:
-	rm ./*.o $(BIN)
+	rm -f $(BIN)
