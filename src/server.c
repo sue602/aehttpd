@@ -135,6 +135,9 @@ void free_client(struct client *c) {
     }
 
     strbuf_free(c->resp.sbuf);
+    strbuf_free(c->resp.head_sbuf);
+    strbuf_free(c->resp.foot_sbuf);
+
     if (c->buf.value) {
         free(c->buf.value);
         c->buf.value = NULL;
@@ -167,13 +170,28 @@ struct client *create_client(int fd) {
     }
 
     
-    strbuf *sbuf = strbuf_new_with_size(8196*4);
-    if (!sbuf) {
-        free_client(c);
-        return NULL;
-    }
-        
-    c->resp.sbuf = sbuf;
+    //strbuf *sbuf = strbuf_new_with_size(0);
+    //if (!sbuf) {
+    //    free_client(c);
+    //    return NULL;
+    //}
+    //c->resp.sbuf = sbuf;
+    //
+    //
+    //strbuf *head_sbuf = strbuf_new_with_size(0);
+    //if (!head_sbuf) {
+    //    free_client(c);
+    //    return NULL;
+    //}
+    //c->resp.head_sbuf = head_sbuf;
+
+    //strbuf *foot_sbuf = strbuf_new_with_size(0);
+    //if (!foot_sbuf) {
+    //    free_client(c);
+    //    return NULL;
+    //}
+    //c->resp.foot_sbuf = foot_sbuf;
+
     return c;
 }
 
@@ -370,7 +388,15 @@ size_t prepare_resp_header(struct client *c, char *headers, size_t buf_size)
     APPEND_CONSTANT("HTTP/1.1 ");
     APPEND_STRING(http_status_as_string_with_code(200));
     APPEND_CONSTANT("\r\nContent-Length: ");
-    APPEND_UINT(strbuf_get_length(resp->sbuf));
+    
+    size_t buf_len = 0;
+    if (resp->head_sbuf)
+        buf_len = resp->head_sbuf->len.buffer;
+    if  (resp->foot_sbuf)
+        buf_len += resp->foot_sbuf->len.buffer; 
+    buf_len += resp->sbuf->len.buffer;
+
+    APPEND_UINT(buf_len);
     APPEND_CONSTANT("\r\nContent-Type: ");
     APPEND_STRING(resp->mime_type);
     APPEND_CONSTANT("\r\nConnection: close");
@@ -408,7 +434,7 @@ void write_loop(aeEventLoop *loop, int fd, void *data, int mask) {
 
     int tries;
     for (tries = 5; tries; ) {
-        ssize_t nwrite = writev(fd, resp->iovec_buf + resp->curr_iov, 2 - resp->curr_iov);
+        ssize_t nwrite = writev(fd, resp->iovec_buf + resp->curr_iov, resp->iovec_sz - resp->curr_iov);
         if (nwrite < 0) {
             switch (errno) {
                 case EAGAIN:
@@ -419,12 +445,12 @@ void write_loop(aeEventLoop *loop, int fd, void *data, int mask) {
             }
         }
 
-        while (resp->curr_iov < 2 && nwrite >= (ssize_t)resp->iovec_buf[resp->curr_iov].iov_len) {
+        while (resp->curr_iov < resp->iovec_sz && nwrite >= (ssize_t)resp->iovec_buf[resp->curr_iov].iov_len) {
             nwrite -= (ssize_t)resp->iovec_buf[resp->curr_iov].iov_len;
             resp->curr_iov++;
         }
 
-        if (resp->curr_iov == 2)
+        if (resp->curr_iov == resp->iovec_sz)
             break;
 
         resp->iovec_buf[resp->curr_iov].iov_base = (char *)resp->iovec_buf[resp->curr_iov].iov_base + nwrite;
@@ -458,10 +484,24 @@ void write_proc(aeEventLoop *loop, int fd, void *data, int mask) {
         goto out;
     }
     
-    resp->iovec_buf[0].iov_base = resp->header;
-    resp->iovec_buf[0].iov_len = header_len;
-    resp->iovec_buf[1].iov_base = strbuf_get_buffer(resp->sbuf);
-    resp->iovec_buf[1].iov_len = strbuf_get_length(resp->sbuf);
+    int i = 0;
+    resp->iovec_buf[i].iov_base = resp->header;
+    resp->iovec_buf[i].iov_len = header_len;
+    i++;
+    if (resp->head_sbuf) {
+        resp->iovec_buf[i].iov_base = strbuf_get_buffer(resp->head_sbuf);
+        resp->iovec_buf[i].iov_len = strbuf_get_length(resp->head_sbuf);
+        i++;
+    } 
+    resp->iovec_buf[i].iov_base = strbuf_get_buffer(resp->sbuf);
+    resp->iovec_buf[i].iov_len = strbuf_get_length(resp->sbuf);
+    i++;
+    if (resp->foot_sbuf) {
+        resp->iovec_buf[i].iov_base = strbuf_get_buffer(resp->foot_sbuf);
+        resp->iovec_buf[i].iov_len = strbuf_get_length(resp->foot_sbuf);
+        i++;
+    } 
+    resp->iovec_sz = i;
     resp->curr_iov = 0;
     resp->total_written = 0;
 
@@ -770,9 +810,12 @@ enum http_status blogs(void *data) {
         return HTTP_INTERNAL_ERROR;
     
     resp->mime_type = "text/html";
-    strbuf_append_str(resp->sbuf, str_head->value, str_head->len);
-    strbuf_append_str(resp->sbuf, str->value, str->len);
-    strbuf_append_str(resp->sbuf, str_foot->value, str_foot->len);
+    resp->head_sbuf = strbuf_new_static(str_head->value, str_head->len);
+    resp->sbuf = strbuf_new_static(str->value, str->len);
+    resp->foot_sbuf = strbuf_new_static(str_foot->value, str_foot->len);
+    //strbuf_set_static(resp->head_sbuf, str_head->value, str_head->len);
+    //strbuf_set_static(resp->sbuf, str->value, str->len);
+    //strbuf_set_static(resp->foot_sbuf, str_foot->value, str_foot->len);
     return HTTP_OK;
 }
 
@@ -803,7 +846,8 @@ enum http_status static_files(void *data) {
         return HTTP_NOT_FOUND;
     
     resp->mime_type = file_mime_type(basename(filepath));
-    strbuf_set_static(resp->sbuf, str->value, str->len);
+    resp->sbuf = strbuf_new_static(str->value, str->len);
+    //strbuf_set_static(resp->sbuf, str->value, str->len);
 
     
     return HTTP_OK;

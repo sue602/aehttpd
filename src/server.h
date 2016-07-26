@@ -132,14 +132,17 @@ typedef struct key_value {
 struct http_request;
 
 struct http_response {
-    strbuf *sbuf;
+    strbuf *sbuf; //static and main 
+    strbuf *head_sbuf;
+    strbuf *foot_sbuf;
     const char *mime_type;
     size_t content_length;
     struct key_value *headers;
 
     char *header;
-    struct iovec iovec_buf[2];
+    int iovec_sz;
     int curr_iov;
+    struct iovec iovec_buf[4];
     ssize_t total_written;
     
     struct client *parent_client;

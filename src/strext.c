@@ -196,7 +196,8 @@ strbuf_set_static(strbuf *s1, const char *s2, size_t sz)
         sz = strlen(s2);
 
     if (!(s1->flags & STATIC))
-        free(s1->value.buffer);
+        if (s1->value.buffer)
+            free(s1->value.buffer);
     s1->value.static_buffer = s2;
     s1->len.allocated = s1->len.buffer = sz;
     s1->flags |= STATIC;
