@@ -23,33 +23,6 @@
 #include <stdio.h>
 
 typedef struct {
-    char *value;
-    size_t len;     /* strlen of value */
-    size_t sz;      /* sizeof *value */
-} string;
-
-static string *string_new(char *value, size_t len, size_t sz) {
-    string *str = malloc(sizeof(string));
-    if (!str)
-        return NULL;
-    str->value = value;
-    str->len = len;
-    str->sz = sz;
-    return str;
-}
-
-static void string_free(void *s) {
-    string *str = s;
-    if (!str)
-        return;
-
-    if (!str->value)
-        free(str->value);
-
-    free(str);
-}
-
-typedef struct {
     union {
         char *buffer;
         const char *static_buffer;

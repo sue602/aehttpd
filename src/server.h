@@ -123,21 +123,69 @@ static inline int16_t string_as_int16(const char *s)
 
 typedef struct key_value {
     char *key;
+    size_t key_len;
     char *value;
     size_t value_len;
 } kv_t;
 
+static kv_t *kv_new(char *key, size_t key_len, char *value, size_t value_len)
+{
+    kv_t *kv = malloc(sizeof(kv_t));
+    if (!kv)
+        return NULL;
+    kv->key = key;
+    kv->key_len = key_len;
+    kv->value = value;
+    kv->value_len = value_len;
+
+    return kv;
+}
+
+typedef struct content {
+    char *value;
+    size_t len;     /* strlen of value */
+    size_t sz;      /* sizeof *value */
+
+    time_t mtime;
+    char etag[16];
+} content_t;
+
+static content_t *content_new(char *value, size_t len, size_t sz) {
+    content_t *cont = malloc(sizeof(content_t));
+    if (!cont)
+        return NULL;
+    cont->value = value;
+    cont->len = len;
+    cont->sz = sz;
+    cont->mtime = 0;
+    cont->etag[0] = 0;
+    return cont;
+}
+
+static void content_free(void *s) {
+    content_t *cont= s;
+    if (!cont)
+        return;
+
+    if (!cont->value)
+        free(cont->value);
+
+    free(cont);
+}
 
 
 struct http_request;
-
+#define MAX_HEADER_LINES 128
 struct http_response {
     strbuf *sbuf; //static and main 
     strbuf *head_sbuf;
     strbuf *foot_sbuf;
     const char *mime_type;
     size_t content_length;
-    struct key_value *headers;
+
+    kv_t headers[MAX_HEADER_LINES];
+    int headers_sz;
+    int curr_header;
 
     char *header;
     int iovec_sz;
@@ -149,10 +197,19 @@ struct http_response {
 };
 
 struct http_request {
+    content_t buf;
+
+    http_parser *parser;
+
     char *path;
     char *query;
-    http_parser *parser;
+    char *mtime;        // If Modified Since
     struct url_map *um;
+
+    kv_t headers[MAX_HEADER_LINES];
+    int headers_sz;
+    int curr_header;
+    int last_was_value;
 
     struct client *parent_client;
 };
@@ -164,7 +221,6 @@ struct client {
     time_t ttl;
     
     aeEventLoop *loop;
-    string buf;
     
     struct http_request req;
     struct http_response resp;
@@ -237,13 +293,16 @@ struct blog {
 };
 
 
-
 void http_set_url_map(struct server *svr, const struct url_map *map);
 void mime_tables_init(void);
 void mime_tables_shutdown(void);
 void free_blogs_list(struct list_head *head);
 
-int url_callback(http_parser* parser, const char *at, size_t length);
+int req_url_cb(http_parser *parser, const char *at, size_t length);
+int req_header_field_cb(http_parser *parser, const char *at, size_t length);
+int req_header_value_cb(http_parser *parser, const char *at, size_t length);
+int req_headers_complete_cb(http_parser *parser);
+
 void accept_proc(aeEventLoop *loop, int fd, void *data, int mask);
 int server_cron(struct aeEventLoop *loop, long long id, void *data);
 int task_cron(struct aeEventLoop *loop, long long id, void *data);

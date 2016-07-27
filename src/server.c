@@ -130,14 +130,28 @@ void free_client(struct client *c) {
     FREE(c->req.parser);
     FREE(c->req.path);
     FREE(c->req.query);
+    int i;
+    for (i = 0; i < c->req.headers_sz; i++) {
+        if (c->req.headers[i].key) 
+            free(c->req.headers[i].key);
+        if (c->req.headers[i].value)
+            free(c->req.headers[i].value);
+    }
 
     FREE(c->resp.header);
     FREE(c->resp.iovec_buf);
+    for (i = 0; i < c->resp.headers_sz; i++) {
+        if (c->resp.headers[i].key) 
+            free(c->resp.headers[i].key);
+        if (c->resp.headers[i].value)
+            free(c->resp.headers[i].value);
+    }
+
     strbuf_free(c->resp.sbuf);
     strbuf_free(c->resp.head_sbuf);
     strbuf_free(c->resp.foot_sbuf);
 
-    FREE(c->buf.value);
+    FREE(c->req.buf.value);
     
     free(c);
 }
@@ -160,43 +174,27 @@ struct client *create_client(int fd) {
     int i = fd % g_svr.cfg.thrd_nr;
     c->loop = g_svr.threads[i].loop;
 
-    c->buf.len = 0;
-    c->buf.sz = 8192; // 8KB limit for method other than POST.
-    c->buf.value = malloc(c->buf.sz);
-    if (!c->buf.value) {
+    c->req.buf.len = 0;
+    c->req.buf.sz = 8192; // 8KB limit for method other than POST.
+    c->req.buf.value = malloc(c->req.buf.sz);
+    if (!c->req.buf.value) {
         free_client(c);
         return NULL;
     }
 
-    
-    //strbuf *sbuf = strbuf_new_with_size(0);
-    //if (!sbuf) {
-    //    free_client(c);
-    //    return NULL;
-    //}
-    //c->resp.sbuf = sbuf;
-    //
-    //
-    //strbuf *head_sbuf = strbuf_new_with_size(0);
-    //if (!head_sbuf) {
-    //    free_client(c);
-    //    return NULL;
-    //}
-    //c->resp.head_sbuf = head_sbuf;
-
-    //strbuf *foot_sbuf = strbuf_new_with_size(0);
-    //if (!foot_sbuf) {
-    //    free_client(c);
-    //    return NULL;
-    //}
-    //c->resp.foot_sbuf = foot_sbuf;
-
     return c;
 }
 
+void page_304(int fd) {
+    write(fd, "HTTP/1.1 304 Not Modified\n"
+            "Content-length: 52\n"
+            "Content-Type: text/html\n\n"
+            "<html><body><H1>304: Not Modified</H1></body></html>",
+            16+19+25+52);
+}
 
 void page_404(int fd) {
-    write(fd, "HTTP/1.1 404 OK\n"
+    write(fd, "HTTP/1.1 404 Page Not Found\n"
             "Content-length: 54\n"
             "Content-Type: text/html\n\n"
             "<html><body><H1>404: Page Not Found</H1></body></html>",
@@ -205,7 +203,7 @@ void page_404(int fd) {
 
 
 void page_418(int fd) {
-    write(fd, "HTTP/1.1 418 OK\n"
+    write(fd, "HTTP/1.1 418 I'm a teapot\n"
             "Content-length: 52\n"
             "Content-Type: text/html\n\n"
             "<html><body><H1>418: I'm a teapot</H1></body></html>",
@@ -214,11 +212,11 @@ void page_418(int fd) {
 
 
 void page_500(int fd) {
-    write(fd, "HTTP/1.1 500 OK\n"
-            "Content-length: 52\n"
+    write(fd, "HTTP/1.1 500 Internal server error\n"
+            "Content-length: 61\n"
             "Content-Type: text/html\n\n"
-            "<html><body><H1>500: Server Error</H1></body></html>",
-            16+19+25+52);
+            "<html><body><H1>500: Internal server error</H1></body></html>",
+            16+19+25+61);
 }
 
 #define RETURN_0_ON_OVERFLOW(len_) \
@@ -398,8 +396,15 @@ size_t prepare_resp_header(struct client *c, char *headers, size_t buf_size)
     APPEND_UINT(buf_len);
     APPEND_CONSTANT("\r\nContent-Type: ");
     APPEND_STRING(resp->mime_type);
+    int i;
+    for (i = 0; i < resp->headers_sz; i++) {
+        APPEND_STRING(resp->headers[i].key);
+        APPEND_STRING(resp->headers[i].value);
+    }
+
     APPEND_CONSTANT("\r\nConnection: close");
     APPEND_CONSTANT("\r\nServer: aehttpd\r\n\r\n\0");
+
 
     return (size_t)(p_headers - headers - 1);
 }
@@ -432,12 +437,13 @@ void write_loop(aeEventLoop *loop, int fd, void *data, int mask) {
     struct http_response *resp = &c->resp;   
 
     for (;;) {
-        ssize_t nwrite = writev(fd, resp->iovec_buf + resp->curr_iov, resp->iovec_sz - resp->curr_iov);
+        ssize_t nwrite = writev(fd, resp->iovec_buf + resp->curr_iov, 
+                resp->iovec_sz - resp->curr_iov);
         if (nwrite < 0) {
             switch (errno) {
                 case EAGAIN:
                 case EINTR:
-                    aeCreateFileEvent(c->loop, c->fd, AE_WRITABLE, write_loop, c);  
+                    aeCreateFileEvent(loop, fd, AE_WRITABLE, write_loop, c);  
                     return;
                 default:
                     goto out;
@@ -447,7 +453,8 @@ void write_loop(aeEventLoop *loop, int fd, void *data, int mask) {
             goto out;
         }
 
-        while (resp->curr_iov < resp->iovec_sz && nwrite >= (ssize_t)resp->iovec_buf[resp->curr_iov].iov_len) {
+        while (resp->curr_iov < resp->iovec_sz && 
+                nwrite >= (ssize_t)resp->iovec_buf[resp->curr_iov].iov_len) {
             nwrite -= (ssize_t)resp->iovec_buf[resp->curr_iov].iov_len;
             resp->curr_iov++;
         }
@@ -455,7 +462,8 @@ void write_loop(aeEventLoop *loop, int fd, void *data, int mask) {
         if (resp->curr_iov == resp->iovec_sz)
             break;
 
-        resp->iovec_buf[resp->curr_iov].iov_base = (char *)resp->iovec_buf[resp->curr_iov].iov_base + nwrite;
+        resp->iovec_buf[resp->curr_iov].iov_base = 
+                (char *)resp->iovec_buf[resp->curr_iov].iov_base + nwrite;
         resp->iovec_buf[resp->curr_iov].iov_len -= (size_t)nwrite;
     }
 
@@ -519,11 +527,11 @@ out:
     free_client(c);
 }
 
-int url_callback(http_parser* parser, const char *at, size_t length) {
+int req_url_cb(http_parser* parser, const char *at, size_t len) {
     struct client *c = parser->data;
 
     struct http_parser_url url;
-    if (http_parser_parse_url(at, length, 0, &url) == 0) {
+    if (http_parser_parse_url(at, len, 0, &url) == 0) {
         if (url.field_set & (1 << UF_PATH)) {
             c->req.path = strndup(at+url.field_data[UF_PATH].off,
                     url.field_data[UF_PATH].len);
@@ -538,13 +546,88 @@ int url_callback(http_parser* parser, const char *at, size_t length) {
     return 0;
 }
 
+#define CURR_LINE (&headers[c->req.curr_header])
+
+int req_header_field_cb(http_parser *parser, const char *at, size_t len)
+{
+    struct client *c = parser->data;
+    kv_t *headers = c->req.headers;
+
+    if (c->req.last_was_value) {
+        c->req.curr_header++;
+
+        if (c->req.curr_header == MAX_HEADER_LINES)
+            return -1;
+        
+        CURR_LINE->value = NULL;
+        CURR_LINE->value_len = 0;
+
+        CURR_LINE->key_len = len;
+        CURR_LINE->key = malloc(len+1);
+        strncpy(CURR_LINE->key, at, len);
+    } else {
+        if (CURR_LINE->value) {
+            free(CURR_LINE->value);
+            CURR_LINE->value = NULL;
+        }
+        CURR_LINE->value_len = 0;        
+
+        CURR_LINE->key_len += len;
+        CURR_LINE->key = realloc(CURR_LINE->key, CURR_LINE->key_len+1);
+        strncpy(CURR_LINE->key, at, len);
+    }
+    
+    CURR_LINE->key[CURR_LINE->key_len] = 0;
+    c->req.last_was_value = 0;
+
+    return 0;
+}
+
+int req_header_value_cb(http_parser *parser, const char *at, size_t len)
+{
+    struct client *c = parser->data;
+    kv_t *headers = c->req.headers;
+
+    if (!c->req.last_was_value) {
+        CURR_LINE->value_len = len;
+        CURR_LINE->value = malloc(len+1);
+        strncpy(CURR_LINE->value, at, len);
+    } else {
+        CURR_LINE->value_len += len;
+        CURR_LINE->value = realloc(CURR_LINE->value, CURR_LINE->value_len+1);
+        strncpy(CURR_LINE->value, at, len);
+    }
+
+    CURR_LINE->value[CURR_LINE->value_len] = 0;
+    c->req.last_was_value = 1;
+
+    return 0;
+}
+
+int req_headers_complete_cb(http_parser *parser)
+{
+    struct client *c = parser->data;
+    c->req.headers_sz = c->req.curr_header + 1;
+
+    int i = 0;
+    for (i = 0; i < c->req.headers_sz; i++) {
+        DBG("%s: %s", c->req.headers[i].key, c->req.headers[i].value);
+        if (strcmp(c->req.headers[i].key, "If-Modified-Since") == 0) {
+            c->req.mtime = c->req.headers[i].value;
+        }
+    }
+
+    return 0;
+}
+
+
 void read_proc(aeEventLoop *loop, int fd, void *data, int mask) {
     struct client *c = data;
     
     (void)(mask);
     
     ssize_t nread;
-    nread = read(fd, c->buf.value, c->buf.sz);
+    nread = read(fd, c->req.buf.value, c->req.buf.sz);
     if (nread == -1) {
         if (errno == EAGAIN) {
             WARN("Read from client failed: %s", strerror(errno));
@@ -561,8 +644,8 @@ void read_proc(aeEventLoop *loop, int fd, void *data, int mask) {
         return; 
     }
     
-    c->buf.len = nread;
-    c->buf.value[nread] = 0;
+    c->req.buf.len = nread;
+    c->req.buf.value[nread] = 0;
 
     http_parser *parser = malloc(sizeof(http_parser));
     if (!parser) {
@@ -576,7 +659,7 @@ void read_proc(aeEventLoop *loop, int fd, void *data, int mask) {
     size_t nparsed;
     
     nparsed = http_parser_execute(parser, &g_svr.parser_settings, 
-            c->buf.value, c->buf.len);
+            c->req.buf.value, c->req.buf.len);
 
     if (parser->upgrade) {
         /* handle new protocol */
@@ -627,20 +710,26 @@ void accept_proc(aeEventLoop *loop, int fd, void *data, int mask) {
     }
 }
 
-string *get_file_content(char *path)
+content_t *get_file_content(char *path)
 {
-    string *str = hash_find(g_svr.cache, path);
+    content_t *str = hash_find(g_svr.cache, path);
     if (!str) {
         WARN("open %s", path);
+
+        struct stat st;
+        if (stat(path, &st) == -1) {
+            st.st_mtime = 0;
+        }
+
         FILE *f = fopen(path, "rb");
         if (!f) {
             DBG("fopen failed: %s", path);
-            string *null_str = string_new(NULL, 0, 0);
-            if (!null_str) {
-                WARN("malloc string failed");
+            content_t *null_cont = content_new(NULL, 0, 0);
+            if (!null_cont) {
+                WARN("malloc content failed");
                 return NULL;
             }
-            hash_add(g_svr.cache, strdup(path), null_str);
+            hash_add(g_svr.cache, strdup(path), null_cont);
             return NULL;
         }
         fseek(f, 0, SEEK_END);
@@ -653,14 +742,16 @@ string *get_file_content(char *path)
         fclose(f);
         buf[fsize] = 0;
 
-        string *new_str = string_new(buf, fsize, fsize+1);
-        if (!new_str) {
-            DBG("string malloc failed");
+
+        content_t *new_cont = content_new(buf, fsize, fsize+1);
+        if (!new_cont) {
+            DBG("content malloc failed");
             free(buf);
             return NULL;
         }
-        hash_add(g_svr.cache, strdup(path), new_str);
-        return new_str;
+        new_cont->mtime = st.st_mtime;
+        hash_add(g_svr.cache, strdup(path), new_cont);
+        return new_cont;
     } else {
         if (str->value == NULL)
             return NULL;
@@ -707,7 +798,7 @@ int build_blog(int id, struct blog *b)
 {
     char path[1024];
     snprintf(path, sizeof(path), "./data/blogs/%d", id);
-    string *str = get_file_content(path);
+    content_t *str = get_file_content(path);
     if (!str) {
         DBG("get json %s failed.", path);
         return HTTP_NOT_FOUND;
@@ -760,9 +851,9 @@ int build_blog_cache(int id)
     }
 
     /* insert formatted html to cache. */
-    string *new_str = string_new(buf, len, sz);
+    content_t *new_str = content_new(buf, len, sz);
     if (!new_str) {
-        DBG("string malloc failed");
+        DBG("content malloc failed");
         free(buf); 
         return HTTP_INTERNAL_ERROR;
     }
@@ -779,9 +870,9 @@ enum http_status blogs(void *data) {
     struct http_request *req = &c->req;
     struct http_response *resp = &c->resp;
 
-    string *str_head= NULL;
-    string *str_foot= NULL;
-    string *str;
+    content_t *str_head= NULL;
+    content_t *str_foot= NULL;
+    content_t *str;
 
 
     /* support both /blogs/1 and /blogs?1 */
@@ -848,11 +939,36 @@ enum http_status static_files(void *data) {
     char path[1024];
     snprintf(path, sizeof(path), "%s/%s", g_svr.cfg.dir, filepath);
 
-    
-    string *str = get_file_content(path);
+    content_t *str = get_file_content(path);
     if (!str)
         return HTTP_NOT_FOUND;
     
+
+    char time_str[128];
+    time_t t;
+    struct tm tmp;
+    gmtime_r(&str->mtime, &tmp);
+    if (strftime(time_str, sizeof(time_str), "%a, %d %b %Y %T %Z", &tmp) != 0) {
+        resp->curr_header = 0;
+        resp->headers[resp->curr_header].key = strdup("\r\nLast-Modified: ");
+        resp->headers[resp->curr_header].value = strdup(time_str);
+        resp->headers_sz++;
+        
+        resp->curr_header++;
+        resp->headers[resp->curr_header].key = strdup("\r\nCache-Control: ");
+        resp->headers[resp->curr_header].value = strdup("max-age=3600");
+        resp->headers_sz++;
+    }
+    t = time(NULL);
+    gmtime_r(&t, &tmp);
+    if (strftime(time_str, sizeof(time_str), "%a, %d %b %Y %T %Z", &tmp) != 0) {
+        resp->curr_header++;
+        resp->headers[resp->curr_header].key = strdup("\r\nDate: ");
+        resp->headers[resp->curr_header].value = strdup(time_str);
+        resp->headers_sz++;
+    }
+    
+
     resp->mime_type = file_mime_type(basename(filepath));
     resp->sbuf = strbuf_new_static(str->value, str->len);
     //strbuf_set_static(resp->sbuf, str->value, str->len);
@@ -861,14 +977,27 @@ enum http_status static_files(void *data) {
     return HTTP_OK;
 }
 
+/* scan resource dirs, generate etag and last modify info. */
+int refresh_resources(void) {
+    static time_t last_mtime = 0;
+
+    struct stat st;
+    stat(g_svr.cfg.dir, &st);
+    if (st.st_mtime <= last_mtime) {
+        return 0;
+    }
+
+    return 1;
+}
+
 /* scan the data dir and generate index page. */
-int refresh_index_page() {
+int refresh_index_page(void) {
     int cmp_int(const void *a, const void *b) {
         const int *pa = a, *pb = b;
         return (*pa - *pb);
     }
 
-    static time_t last_mtime;
+    static time_t last_mtime = 0;
     int sz = 0, cnt = 0;
     int *ids = NULL, *tmp_ids = NULL;
 
@@ -878,10 +1007,9 @@ int refresh_index_page() {
     if (st.st_mtime <= last_mtime) {
         return 0;
     }
-    
 
     hash_free(g_svr.cache);
-    g_svr.cache = hash_str_new(free, string_free);
+    g_svr.cache = hash_str_new(free, content_free);
 
     DIR *dir = opendir("./data/blogs/");
     if (!dir)
@@ -957,7 +1085,7 @@ int refresh_index_page() {
     if (!buf)
         return -1;
 
-    string *str;
+    content_t *str;
     str = get_file_content("./tmpl/index_header.html");
     if (!str)
         return HTTP_INTERNAL_ERROR;
@@ -988,7 +1116,7 @@ int refresh_index_page() {
     char path[1024];
     snprintf(path, sizeof(path), "%s/index.html", g_svr.cfg.dir);
     
-    string *index_str = string_new(buf, len, buf_sz);
+    content_t *index_str = content_new(buf, len, buf_sz);
     hash_add(g_svr.cache, strdup(path), index_str);
     return last_mtime;
 }

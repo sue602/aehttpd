@@ -160,7 +160,10 @@ static int svr_init(void)
     g_svr.running = 1;
     pthread_mutex_init(&g_svr.mtx, 0);
     
-    g_svr.parser_settings.on_url = url_callback; 
+    g_svr.parser_settings.on_url = req_url_cb; 
+    g_svr.parser_settings.on_header_field = req_header_field_cb; 
+    g_svr.parser_settings.on_header_value = req_header_value_cb; 
+    g_svr.parser_settings.on_headers_complete = req_headers_complete_cb; 
     
     g_svr.threads = calloc(g_svr.cfg.thrd_nr, sizeof(struct thrd));
     if (!g_svr.threads) {
@@ -169,7 +172,7 @@ static int svr_init(void)
     }
     
     mime_tables_init();
-    g_svr.cache = hash_str_new(free, string_free);
+    g_svr.cache = hash_str_new(free, content_free);
     g_svr.blogs = malloc(sizeof(struct list_head));
     list_head_init(g_svr.blogs);
 
