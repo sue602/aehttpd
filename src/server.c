@@ -383,7 +383,19 @@ size_t prepare_resp_header(struct client *c, char *headers, size_t buf_size)
     p_headers = headers;
 
     APPEND_CONSTANT("HTTP/1.1 ");
-    APPEND_STRING(http_status_as_string_with_code(200));
+    APPEND_STRING(http_status_as_string_with_code(resp->status));
+    int i;
+    for (i = 0; i < resp->headers_sz; i++) {
+        APPEND_STRING(resp->headers[i].key);
+        APPEND_STRING(resp->headers[i].value);
+    }
+
+    if (resp->status != HTTP_OK) {
+        APPEND_CONSTANT("\r\nConnection: close");
+        APPEND_CONSTANT("\r\nServer: aehttpd\r\n\r\n\0");
+        return (size_t)(p_headers - headers - 1);
+    }
+
     APPEND_CONSTANT("\r\nContent-Length: ");
     
     size_t buf_len = 0;
@@ -396,11 +408,6 @@ size_t prepare_resp_header(struct client *c, char *headers, size_t buf_size)
     APPEND_UINT(buf_len);
     APPEND_CONSTANT("\r\nContent-Type: ");
     APPEND_STRING(resp->mime_type);
-    int i;
-    for (i = 0; i < resp->headers_sz; i++) {
-        APPEND_STRING(resp->headers[i].key);
-        APPEND_STRING(resp->headers[i].value);
-    }
 
     APPEND_CONSTANT("\r\nConnection: close");
     APPEND_CONSTANT("\r\nServer: aehttpd\r\n\r\n\0");
@@ -483,43 +490,51 @@ void write_proc(aeEventLoop *loop, int fd, void *data, int mask) {
 
     resp->header = malloc(512); 
 
-    if (!resp->mime_type) {
-        page_404(fd);
-        goto out;
-    }
     
     size_t header_len = prepare_resp_header(c, resp->header, 512);
     if (!header_len) {
         page_500(fd);
         goto out;
     }
-    
-    resp->iovec_sz = 2 + (resp->head_sbuf != NULL) + (resp->head_sbuf != NULL);
+    resp->iovec_sz = 1 + (resp->sbuf != 0) + (resp->head_sbuf != 0) + (resp->head_sbuf != 0);
     resp->iovec_buf = calloc(resp->iovec_sz, sizeof(struct iovec));
     if (!resp->iovec_buf) {
         page_500(fd);
         goto out;
     }
-
+    resp->curr_iov = 0;
+    resp->total_written = 0;
     int i = 0;
     resp->iovec_buf[i].iov_base = resp->header;
     resp->iovec_buf[i].iov_len = header_len;
     i++;
+    
+    if (resp->status != HTTP_OK) {
+        write_loop(loop, fd, data, mask);
+        return;
+    }
+
+    if (!resp->mime_type) {
+        page_404(fd);
+        goto out;
+    }
+
+
     if (resp->head_sbuf) {
         resp->iovec_buf[i].iov_base = strbuf_get_buffer(resp->head_sbuf);
         resp->iovec_buf[i].iov_len = strbuf_get_length(resp->head_sbuf);
         i++;
     } 
-    resp->iovec_buf[i].iov_base = strbuf_get_buffer(resp->sbuf);
-    resp->iovec_buf[i].iov_len = strbuf_get_length(resp->sbuf);
-    i++;
+    if (resp->sbuf) {
+        resp->iovec_buf[i].iov_base = strbuf_get_buffer(resp->sbuf);
+        resp->iovec_buf[i].iov_len = strbuf_get_length(resp->sbuf);
+        i++;
+    }
     if (resp->foot_sbuf) {
         resp->iovec_buf[i].iov_base = strbuf_get_buffer(resp->foot_sbuf);
         resp->iovec_buf[i].iov_len = strbuf_get_length(resp->foot_sbuf);
         i++;
     } 
-    resp->curr_iov = 0;
-    resp->total_written = 0;
 
     write_loop(loop, fd, data, mask);
     return;
@@ -681,7 +696,7 @@ void read_proc(aeEventLoop *loop, int fd, void *data, int mask) {
         return;
     }
 
-    c->req.um->handler(c);
+    c->resp.status = c->req.um->handler(c);
 
     aeCreateFileEvent(c->loop, c->fd, AE_WRITABLE, write_proc, c);  
 }
@@ -938,6 +953,7 @@ enum http_status static_files(void *data) {
     
     char path[1024];
     snprintf(path, sizeof(path), "%s/%s", g_svr.cfg.dir, filepath);
+    resp->mime_type = file_mime_type(basename(filepath));
 
     content_t *str = get_file_content(path);
     if (!str)
@@ -947,6 +963,16 @@ enum http_status static_files(void *data) {
     char time_str[128];
     time_t t;
     struct tm tmp;
+    if (req->mtime) {
+        strptime(req->mtime, "%a, %d %b %Y %T %z", &tmp);
+        t = mktime(&tmp);
+        if (t >= str->mtime) {
+            DBG("not modified: %s", path);
+            return HTTP_NOT_MODIFIED;
+        }
+    }
+
+
     gmtime_r(&str->mtime, &tmp);
     if (strftime(time_str, sizeof(time_str), "%a, %d %b %Y %T %Z", &tmp) != 0) {
         resp->curr_header = 0;
@@ -969,7 +995,6 @@ enum http_status static_files(void *data) {
     }
     
 
-    resp->mime_type = file_mime_type(basename(filepath));
     resp->sbuf = strbuf_new_static(str->value, str->len);
     //strbuf_set_static(resp->sbuf, str->value, str->len);
 

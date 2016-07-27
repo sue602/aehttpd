@@ -177,6 +177,7 @@ static void content_free(void *s) {
 struct http_request;
 #define MAX_HEADER_LINES 128
 struct http_response {
+    enum http_status status;
     strbuf *sbuf; //static and main 
     strbuf *head_sbuf;
     strbuf *foot_sbuf;
