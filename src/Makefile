@@ -10,7 +10,7 @@ BIN = ../aehttpd
 CFLAGS = -I../usr/include
 DEBUG_CFLAGS = -DDEBUG -g
 
-LDFLAGS = -lpthread -lz -L../usr/lib 
+LDFLAGS = -L../usr/lib -lpthread -lz 
 
 all:
 	gcc ${SRC} -o ${BIN} ${CFLAGS} ${LDFLAGS} 
