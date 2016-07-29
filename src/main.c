@@ -16,6 +16,10 @@
 #include "hash.h"
 #include "tmpl.h"
 
+#include "hiredis/hiredis.h"
+#include "hiredis/async.h"
+#include "hiredis/adapters/ae.h"
+
 
 struct server g_svr;
 

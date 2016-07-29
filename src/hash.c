@@ -20,14 +20,14 @@
 
 #define _GNU_SOURCE
 #include <errno.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <unistd.h>
 
 #include "hash.h"
@@ -72,9 +72,9 @@ static unsigned get_random_unsigned(void)
 		return value;
 #endif
 
-	int fd = open("/dev/urandom", O_CLOEXEC | O_RDONLY);
+	int fd = open("/dev/urandom", O_RDONLY);
 	if (fd < 0) {
-		fd = open("/dev/random", O_CLOEXEC | O_RDONLY);
+		fd = open("/dev/random", O_RDONLY);
 		if (fd < 0)
 			return default_odd_constant;
 	}
