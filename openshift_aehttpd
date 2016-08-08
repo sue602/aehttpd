@@ -2,5 +2,6 @@
 
 curr_dir=`pwd`
 export LD_LIBRARY_PATH=$curr_dir/usr/lib;
-./aehttpd -a $OPENSHIFT_DIY_IP -p $OPENSHIFT_DIY_PORT &
+./aehttpd -a $OPENSHIFT_DIY_IP -p $OPENSHIFT_DIY_PORT 2>&1 >> log &
+
 
